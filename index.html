@@ -349,6 +349,68 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
 .nav-btn.active .nav-indicator{opacity:1;}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--surface2);border:1px solid var(--border);border-radius:30px;padding:10px 20px;font-size:0.83rem;color:var(--text);z-index:999;transition:transform 0.3s ease;white-space:nowrap;pointer-events:none;}
 .toast.show{transform:translateX(-50%) translateY(0);}
+
+/* ===== MOTIVATIONS ===== */
+/* 紙吹雪キャンバス */
+#confettiCanvas{position:fixed;inset:0;pointer-events:none;z-index:9000;}
+
+/* コンボバッジ */
+.combo-badge{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0);
+  z-index:9001;pointer-events:none;text-align:center;
+  transition:transform 0.25s cubic-bezier(0.34,1.56,0.64,1),opacity 0.3s;
+  opacity:0;
+}
+.combo-badge.show{transform:translate(-50%,-50%) scale(1);opacity:1;}
+.combo-badge.hide{transform:translate(-50%,-50%) scale(1.3);opacity:0;}
+.combo-num{font-family:'Bebas Neue',sans-serif;font-size:5rem;line-height:1;text-shadow:0 0 30px currentColor;}
+.combo-label{font-size:0.9rem;font-weight:900;letter-spacing:0.2em;text-transform:uppercase;margin-top:-4px;}
+
+/* 励ましメッセージ */
+.cheer-msg{
+  position:fixed;top:38%;left:50%;transform:translateX(-50%) translateY(20px);
+  z-index:9002;pointer-events:none;
+  background:rgba(10,12,15,0.88);border-radius:30px;padding:10px 22px;
+  font-size:1rem;font-weight:700;color:var(--text);
+  border:1.5px solid var(--border);
+  opacity:0;transition:opacity 0.3s,transform 0.3s;
+  white-space:nowrap;backdrop-filter:blur(8px);
+}
+.cheer-msg.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+/* レベルアップオーバーレイ */
+.levelup-overlay{
+  position:fixed;inset:0;z-index:9003;pointer-events:none;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(0,0,0,0);transition:background 0.4s;
+}
+.levelup-overlay.show{background:rgba(0,0,0,0.7);}
+.levelup-card{
+  text-align:center;transform:scale(0.5) translateY(40px);opacity:0;
+  transition:transform 0.5s cubic-bezier(0.34,1.56,0.64,1),opacity 0.4s;
+}
+.levelup-overlay.show .levelup-card{transform:scale(1) translateY(0);opacity:1;}
+.levelup-label{font-size:0.85rem;letter-spacing:0.3em;color:var(--accent);text-transform:uppercase;margin-bottom:4px;}
+.levelup-title{font-family:'Bebas Neue',sans-serif;font-size:4rem;letter-spacing:0.1em;line-height:1;
+  background:linear-gradient(135deg,#ffd700,#fb923c,#e8192c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.levelup-rank{font-size:1rem;color:var(--text-muted);margin-top:6px;font-weight:600;}
+.levelup-stars{font-size:2rem;letter-spacing:4px;margin-top:4px;}
+
+/* 正解フラッシュ（緑の縁取り） */
+@keyframes correctFlash{
+  0%{box-shadow:0 0 0 0 rgba(34,197,94,0);}
+  30%{box-shadow:0 0 0 8px rgba(34,197,94,0.35);}
+  100%{box-shadow:0 0 0 0 rgba(34,197,94,0);}
+}
+@keyframes wrongShake{
+  0%,100%{transform:translateX(0);}
+  20%{transform:translateX(-8px);}
+  40%{transform:translateX(8px);}
+  60%{transform:translateX(-5px);}
+  80%{transform:translateX(5px);}
+}
+.question-card.flash-correct{animation:correctFlash 0.6s ease;}
+.question-card.shake-wrong{animation:wrongShake 0.4s ease;}
 </style>
 </head>
 <body>
@@ -665,6 +727,22 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
 
 <div class="toast" id="toast"></div>
 
+<!-- MOTIVATION ELEMENTS -->
+<canvas id="confettiCanvas"></canvas>
+<div class="combo-badge" id="comboBadge">
+  <div class="combo-num" id="comboNum">3</div>
+  <div class="combo-label" id="comboLabel">COMBO!</div>
+</div>
+<div class="cheer-msg" id="cheerMsg"></div>
+<div class="levelup-overlay" id="levelupOverlay">
+  <div class="levelup-card">
+    <div class="levelup-label">LEVEL UP!</div>
+    <div class="levelup-title" id="levelupTitle">LEVEL 2</div>
+    <div class="levelup-rank" id="levelupRank"></div>
+    <div class="levelup-stars" id="levelupStars"></div>
+  </div>
+</div>
+
 <script>
 const SUPA_URL='https://qaaofeofhbtbslcgafqy.supabase.co';
 const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhYW9mZW9maGJ0YnNsY2dhZnF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNjE1NTYsImV4cCI6MjA5MTczNzU1Nn0.eS05RsBtj0vheZF61NyUgtK1nNcqueKhv1kjnuH-MTI';
@@ -830,6 +908,7 @@ function startSetQuiz(set){
   if(!qs.length){showToast('⚠️ このセットに問題がありません');return;}
   sessionQuestions=wSample(qs,Math.min(questionCount,qs.length));
   currentIdx=0;results=[];
+  resetMotivation();
   showScreen('quizScreen');renderQ();
 }
 
@@ -840,7 +919,10 @@ function wSample(qs,n){
   for(let i=0;i<cnt;i++){const rem=pool.filter((_,idx)=>!used.has(idx));if(!rem.length)break;const tw=rem.reduce((s,p)=>s+p.w,0);let r=Math.random()*tw,c=0;for(let j=0;j<rem.length;j++){r-=rem[j].w;if(r<=0){c=j;break;}}used.add(pool.indexOf(rem[c]));sel.push(rem[c].q);}
   return sel;
 }
+let answered=false; // 現在の問題を回答済みかどうか
+
 function renderQ(){
+  answered=false; // 問題を描画するたびにリセット
   const q=sessionQuestions[currentIdx];const tot=sessionQuestions.length;
   document.getElementById('progressFill').style.width=(currentIdx/tot*100)+'%';
   document.getElementById('qIndex').textContent=currentIdx+1;document.getElementById('qTotal').textContent=tot;
@@ -848,7 +930,13 @@ function renderQ(){
   const wd=getW()[qKey(q)];const wb=document.getElementById('weakBadge');
   wb.style.display=(wd&&wd.wrong>0&&wd.wrong/(wd.correct+wd.wrong)>=0.5)?'inline-block':'none';
   const tb=document.getElementById('qTypeBadge');tb.textContent=q.type==='multi'?'4択':'○×';tb.className='q-type-badge '+(q.type==='multi'?'multi':'truefalse');
-  const area=document.getElementById('choicesArea');document.getElementById('explanationBox').classList.remove('show');document.getElementById('nextBtn').classList.remove('show');
+  const area=document.getElementById('choicesArea');
+  document.getElementById('explanationBox').classList.remove('show');
+  // nextBtnを完全に非表示にリセット
+  const nxt=document.getElementById('nextBtn');
+  nxt.classList.remove('show');
+  nxt.style.display='none';
+  nxt.style.borderColor='';nxt.style.color='';
   if(q.type==='multi'){
     area.innerHTML='<div class="choices" id="choicesList"></div>';const list=document.getElementById('choicesList');
     ['A','B','C','D'].forEach((lbl,i)=>{const btn=document.createElement('button');btn.className='choice-btn';btn.innerHTML=`<span class="choice-label">${lbl}</span>${q.choices[i]}`;btn.addEventListener('click',()=>handleMA(i+1,q));list.appendChild(btn);});
@@ -859,6 +947,8 @@ function renderQ(){
   }
 }
 function handleMA(sel,q){
+  if(answered)return;
+  answered=true;
   const c=q.answer===sel;
   results.push({q,selected:q.choices[sel-1],correct:c});
   updateWeight(q,c);
@@ -867,9 +957,12 @@ function handleMA(sel,q){
     if(i+1===q.answer)btn.classList.add('correct');
     else if(i+1===sel&&!c)btn.classList.add('wrong');
   });
+  if(c)triggerCorrectEffects();else triggerWrongEffects();
   showFB(q,c);
 }
 function handleTF(sel,q){
+  if(answered)return;
+  answered=true;
   const c=q.answer===sel;
   results.push({q,selected:sel,correct:c});
   updateWeight(q,c);
@@ -877,6 +970,7 @@ function handleTF(sel,q){
   tb.disabled=true;fb.disabled=true;
   if(q.answer==='○'){tb.classList.add('correct');if(!c)fb.classList.add('wrong');}
   else{fb.classList.add('correct');if(!c)tb.classList.add('wrong');}
+  if(c)triggerCorrectEffects();else triggerWrongEffects();
   showFB(q,c);
 }
 
@@ -1019,7 +1113,7 @@ function showFB(q,c){
 
   if(c){
     // 正解 → 3秒カウントダウン付きボタン
-    nxt.style.display='block';
+    nxt.style.display=''; // CSSに委ねる
     nxt.classList.add('show');
     let left=3;
     const label=isLast?'結果を見る':'次の問題';
@@ -1036,6 +1130,7 @@ function showFB(q,c){
     },1000);
   }else{
     // 不正解 → 手動
+    nxt.style.display=''; // CSSに委ねる
     nxt.innerHTML=isLast?'結果を見る 🏁':'次の問題 →';
     nxt.style.borderColor='';nxt.style.color='';
     nxt.classList.add('show');
@@ -1043,6 +1138,7 @@ function showFB(q,c){
 }
 
 function goNext(){
+  if(!answered)return; // 未回答なら無視
   if(autoNextTimer){clearInterval(autoNextTimer);autoNextTimer=null;}
   currentIdx++;
   if(currentIdx>=sessionQuestions.length)showResult();else renderQ();
@@ -1060,6 +1156,9 @@ async function showResult(){
   document.getElementById('scorePct').textContent=pct+'%';document.getElementById('correctCount').textContent=c;document.getElementById('wrongCount').textContent=t-c;document.getElementById('totalCountResult').textContent=t;
   const tl=pct>=90?['🏆 完璧！','全問正解に近い高スコアです']:pct>=70?['👏 よくできました','基礎知識はしっかり身についています']:pct>=50?['📚 もう少し','復習して再挑戦してみましょう']:['💪 頑張ろう！','基礎から再確認が必要です'];
   document.getElementById('resultTitle').textContent=tl[0];document.getElementById('resultSub').textContent=`${t}問中 ${c}問正解　${tl[1]}`;
+  // 結果演出
+  if(pct===100)setTimeout(()=>launchConfetti(150),400);
+  else if(pct>=80)setTimeout(()=>launchConfetti(80),400);
   const rl=document.getElementById('reviewList');rl.innerHTML='';
   results.forEach((r,i)=>{
     const ans=r.q.type==='multi'?r.q.choices[r.q.answer-1]:r.q.answer;
@@ -1373,7 +1472,211 @@ document.getElementById('changePwBtn').addEventListener('click',()=>{const p1=do
 // switchTabにadminSetList更新を追加
 function switchTab(tab){document.querySelectorAll('.admin-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.admin-panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab));if(tab==='upload')renderAdminSetList();if(tab==='questions'){renderAdminSetList();renderQL();}if(tab==='weak')renderWP();if(tab==='allscores')renderAS();}
 
-// INIT
+// ===== MOTIVATION SYSTEM =====
+let comboCount=0;
+let totalCorrectEver=0; // セッション内の累計正解数（レベル計算用）
+
+// --- レベル定義 ---
+const LEVELS=[
+  {min:0,  name:'研修生',     stars:'☆☆☆☆☆'},
+  {min:5,  name:'救急隊員',   stars:'★☆☆☆☆'},
+  {min:15, name:'一人前隊員', stars:'★★☆☆☆'},
+  {min:30, name:'ベテラン',   stars:'★★★☆☆'},
+  {min:50, name:'エキスパート',stars:'★★★★☆'},
+  {min:80, name:'救急のプロ', stars:'★★★★★'},
+];
+function getLevel(n){
+  let lv=0;
+  for(let i=0;i<LEVELS.length;i++){if(n>=LEVELS[i].min)lv=i;}
+  return lv;
+}
+
+// --- 励ましメッセージ定義 ---
+const CHEER_CORRECT=[
+  '🔥 その調子！','👍 よし！','✨ 完璧！','💪 さすが！','🎯 正確！',
+  '🏆 素晴らしい！','⚡ 鋭い！','💡 正解！','🚑 プロだ！','👏 見事！',
+];
+const CHEER_COMBO={
+  3:'🔥 3連続正解！',5:'⚡ 5連続！すごい！',
+  7:'🏆 7連続！完璧！',10:'🚀 10連続！！神！',
+};
+const CHEER_WRONG=[
+  // 前向き系
+  '💡 次は正解できる！','📖 ここが復習ポイント！','💪 めげずにいこう！',
+  '🔄 もう一度チャレンジ！','🧠 これで覚えた！','🎯 惜しかった！',
+  '📚 復習してまた挑戦！','🌱 失敗から学ぼう！','✨ 次は絶対いける！',
+  '🚀 ここから巻き返せ！','🔥 まだまだこれから！','👊 負けるな！',
+  // EMS系
+  '🚑 現場では活かそう！','🏥 知識を積み重ねよう！','❤️‍🔥 救命のために覚えよう！',
+  '🩺 臨床で大事なポイント！','🔬 深く理解するチャンス！',
+  // ユーモア系
+  '🤔 難問だった…','😤 くそっ、次だ次！','🙈 見なかったことに…いや復習！',
+  '💦 ヒヤリ！でも大丈夫！','😅 惜しい！もう少し！',
+  // 応援系
+  '👏 チャレンジしたことが大切！','🌟 諦めないことが強さ！',
+  '🎌 正解目指してGO！','⚡ 次の問題で取り返せ！',
+];
+
+let cheerTimer=null;
+function showCheer(msg,color='var(--text)'){
+  const el=document.getElementById('cheerMsg');
+  if(cheerTimer){clearTimeout(cheerTimer);el.classList.remove('show');}
+  el.textContent=msg;el.style.color=color;
+  requestAnimationFrame(()=>{
+    el.classList.add('show');
+    cheerTimer=setTimeout(()=>{el.classList.remove('show');},1600);
+  });
+}
+
+// --- コンボバッジ ---
+let comboTimer=null;
+function showCombo(n){
+  const badge=document.getElementById('comboBadge');
+  const numEl=document.getElementById('comboNum');
+  const lblEl=document.getElementById('comboLabel');
+  if(comboTimer){clearTimeout(comboTimer);badge.classList.remove('show','hide');}
+  numEl.textContent=n;
+  const colors=n>=10?'#ffd700':n>=7?'#fb923c':n>=5?'#e8192c':'#38bdf8';
+  numEl.style.color=colors;lblEl.style.color=colors;
+  badge.classList.remove('hide');
+  requestAnimationFrame(()=>{
+    badge.classList.add('show');
+    comboTimer=setTimeout(()=>{
+      badge.classList.add('hide');
+      setTimeout(()=>badge.classList.remove('show','hide'),400);
+    },900);
+  });
+}
+
+// --- 紙吹雪 ---
+const confCanvas=document.getElementById('confettiCanvas');
+const confCtx=confCanvas.getContext('2d');
+let confettiPieces=[];
+let confettiRAF=null;
+
+function resizeConfCanvas(){
+  confCanvas.width=window.innerWidth;
+  confCanvas.height=window.innerHeight;
+}
+window.addEventListener('resize',resizeConfCanvas);
+resizeConfCanvas();
+
+function launchConfetti(count=60){
+  const colors=['#e8192c','#22c55e','#38bdf8','#ffd700','#fb923c','#a78bfa','#ffffff'];
+  for(let i=0;i<count;i++){
+    confettiPieces.push({
+      x:Math.random()*confCanvas.width,
+      y:-10-Math.random()*40,
+      vx:(Math.random()-0.5)*6,
+      vy:3+Math.random()*5,
+      rot:Math.random()*360,
+      rotV:(Math.random()-0.5)*8,
+      w:8+Math.random()*8,
+      h:4+Math.random()*5,
+      color:colors[Math.floor(Math.random()*colors.length)],
+      alpha:1,
+    });
+  }
+  if(!confettiRAF)animateConfetti();
+}
+
+function animateConfetti(){
+  confCtx.clearRect(0,0,confCanvas.width,confCanvas.height);
+  confettiPieces=confettiPieces.filter(p=>{
+    p.x+=p.vx;p.y+=p.vy;p.rot+=p.rotV;p.vy+=0.12;p.vx*=0.99;
+    if(p.y>confCanvas.height+20)return false;
+    confCtx.save();
+    confCtx.translate(p.x,p.y);confCtx.rotate(p.rot*Math.PI/180);
+    confCtx.globalAlpha=Math.min(1,p.alpha);
+    confCtx.fillStyle=p.color;
+    confCtx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+    confCtx.restore();
+    return true;
+  });
+  if(confettiPieces.length>0){confettiRAF=requestAnimationFrame(animateConfetti);}
+  else{confettiRAF=null;confCtx.clearRect(0,0,confCanvas.width,confCanvas.height);}
+}
+
+// --- レベルアップ ---
+function checkLevelUp(prevCorrect,newCorrect){
+  const prevLv=getLevel(prevCorrect);
+  const newLv=getLevel(newCorrect);
+  if(newLv>prevLv){
+    const lv=LEVELS[newLv];
+    const overlay=document.getElementById('levelupOverlay');
+    document.getElementById('levelupTitle').textContent='LEVEL '+(newLv+1);
+    document.getElementById('levelupRank').textContent=lv.name;
+    document.getElementById('levelupStars').textContent=lv.stars;
+    overlay.classList.add('show');
+    launchConfetti(100);
+    setTimeout(()=>{overlay.classList.remove('show');},2800);
+  }
+}
+
+// --- 正解・不正解アニメーション ---
+function flashCard(correct){
+  const card=document.querySelector('.question-card');
+  if(!card)return;
+  card.classList.remove('flash-correct','shake-wrong');
+  void card.offsetWidth; // reflow
+  card.classList.add(correct?'flash-correct':'shake-wrong');
+  setTimeout(()=>card.classList.remove('flash-correct','shake-wrong'),700);
+}
+
+// --- メイン：正解時の演出 ---
+function triggerCorrectEffects(){
+  const prev=totalCorrectEver;
+  totalCorrectEver++;
+  comboCount++;
+  missCount=0; // 正解したら連続ミスリセット
+  flashCard(true);
+
+  // 励ましメッセージ
+  if(CHEER_COMBO[comboCount]){
+    showCheer(CHEER_COMBO[comboCount],'var(--red)');
+  }else if(comboCount>=3){
+    showCheer(`🔥 ${comboCount}連続正解！`,'#fb923c');
+  }else{
+    showCheer(CHEER_CORRECT[Math.floor(Math.random()*CHEER_CORRECT.length)]);
+  }
+
+  // コンボバッジ（3以上）
+  if(comboCount>=3)showCombo(comboCount);
+
+  // 5の倍数でコンフェッティ
+  if(comboCount>=3&&comboCount%5===0)launchConfetti(50);
+  else if(comboCount>=2)launchConfetti(20);
+
+  // レベルアップチェック
+  checkLevelUp(prev,totalCorrectEver);
+}
+
+let missCount=0; // 連続不正解カウント
+
+// --- 不正解時の演出 ---
+function triggerWrongEffects(){
+  comboCount=0;
+  missCount++;
+  flashCard(false);
+
+  // 連続ミス数に応じてメッセージ変化
+  let msg;
+  if(missCount>=3){
+    const strongMsgs=['🔥 ここが弱点！克服しよう！','💪 難しいほど価値がある！','🧠 繰り返しで必ず覚える！','🚑 現場のために絶対マスター！'];
+    msg=strongMsgs[Math.floor(Math.random()*strongMsgs.length)];
+  }else{
+    msg=CHEER_WRONG[Math.floor(Math.random()*CHEER_WRONG.length)];
+  }
+  showCheer(msg,'var(--text-muted)');
+}
+
+// セッション開始時にリセット
+function resetMotivation(){
+  comboCount=0;totalCorrectEver=0;missCount=0;
+  confettiPieces=[];confCtx.clearRect(0,0,confCanvas.width,confCanvas.height);
+}
+
+// ===== INIT =====
 (function(){
   const nick=localStorage.getItem(LS_NICK),uid=localStorage.getItem(LS_UID);
   if(nick&&uid){currentNickname=nick;currentUserId=uid;loadSets();rebuildAllQuestions();updateChips();initHome();renderResumeBanner();showScreen('homeScreen');}
