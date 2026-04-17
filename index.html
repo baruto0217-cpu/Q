@@ -768,25 +768,141 @@ const SAMPLE=[
   {text:"ニトログリセリン舌下投与は収縮期血圧90mmHg未満でも安全に投与できる。正しいか？",type:"tf",answer:"×",explanation:"SBP 90mmHg未満ではニトログリセリン禁忌。"},
 ];
 
-let questionSets=[]; // [{id,name,questions,createdAt}]
+let questionSets=[]; // [{id,name,questions:[{id,text,type,choices,answer,explanation,sort_order}],createdAt}]
 let allQuestions=[],sessionQuestions=[],currentIdx=0,results=[],questionCount=10,weakPriorityMode=true;
 let currentUserId=null,currentNickname=null;
 let adminLoggedIn=false,editingIdx=null,editingSetId=null,weakFilter='all',scoreChartRange=10;
-const LS_NICK='emsQuizNickname',LS_UID='emsQuizUserId',LS_SETS='emsQuizSets',ADMIN_PW_KEY='emsAdminPw',WEIGHTS_KEY='emsQuizWeights';
+const LS_NICK='emsQuizNickname',LS_UID='emsQuizUserId',LS_CACHE='emsQuizSetsCache',ADMIN_PW_KEY='emsAdminPw',WEIGHTS_KEY='emsQuizWeights';
 
-// SETS STORAGE
-function saveSets(){try{localStorage.setItem(LS_SETS,JSON.stringify(questionSets));}catch{}}
-function loadSets(){try{const d=localStorage.getItem(LS_SETS);if(d){questionSets=JSON.parse(d);return true;}}
-  // 旧形式 (LS_QS) からの移行
-  catch{}
-  try{const old=localStorage.getItem('emsQuizQuestions');if(old){const qs=JSON.parse(old);if(qs&&qs.length){questionSets=[{id:'legacy',name:'インポートデータ',questions:qs,createdAt:new Date().toISOString()}];saveSets();return true;}}}catch{}
-  return false;
+// ===== SUPABASE CRUD =====
+async function sb(path,opts={}){
+  const r=await fetch(SUPA_URL+'/rest/v1/'+path,{...opts,headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':opts.prefer||'return=representation',...(opts.headers||{})}});
+  if(!r.ok)throw new Error(await r.text());
+  const t=await r.text();return t?JSON.parse(t):null;
 }
-function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+
+// キャッシュ（オフライン時フォールバック）
+function cacheSets(){try{localStorage.setItem(LS_CACHE,JSON.stringify(questionSets));}catch{}}
+function getCachedSets(){try{const d=localStorage.getItem(LS_CACHE);return d?JSON.parse(d):[];}catch{return[];}}
+
 function getSetById(id){return questionSets.find(s=>s.id===id);}
-// allQuestionsは後方互換のためにアクティブセットを反映
 function rebuildAllQuestions(){allQuestions=questionSets.flatMap(s=>s.questions||[]);}
-function saveQs(){saveSets();} // alias for compat
+function saveQs(){} // compat stub
+
+// --- セットをSupabaseから取得 ---
+async function fetchSetsFromDB(){
+  try{
+    const sets=await sb('question_sets?select=id,name,created_at&order=created_at.asc')||[];
+    const questions=await sb('questions?select=id,set_id,text,type,choices,answer,explanation,sort_order&order=sort_order.asc')||[];
+    questionSets=sets.map(s=>({
+      id:s.id, name:s.name, createdAt:s.created_at,
+      questions:questions.filter(q=>q.set_id===s.id).map(q=>({
+        id:q.id, text:q.text, type:q.type,
+        choices:q.choices||null, answer:q.answer,
+        explanation:q.explanation||'', sort_order:q.sort_order
+      }))
+    }));
+    cacheSets();
+    return true;
+  }catch(e){
+    console.warn('fetchSets error',e);
+    questionSets=getCachedSets();
+    return false;
+  }
+}
+
+// --- セットをSupabaseに保存 ---
+async function uploadSetToDB(name, questions){
+  // 1. setレコード作成
+  const setRes=await sb('question_sets',{method:'POST',body:JSON.stringify({name}),prefer:'return=representation'});
+  const setId=setRes[0].id;
+  // 2. 問題を一括INSERT
+  const rows=questions.map((q,i)=>({
+    set_id:setId, text:q.text, type:q.type,
+    choices:q.choices||null, answer:String(q.answer),
+    explanation:q.explanation||'', sort_order:i
+  }));
+  // 50件ずつバッチ
+  for(let i=0;i<rows.length;i+=50){
+    await sb('questions',{method:'POST',body:JSON.stringify(rows.slice(i,i+50)),prefer:'return=minimal'});
+  }
+  return setId;
+}
+
+// --- セット削除 ---
+async function deleteSetFromDB(setId){
+  await sb(`questions?set_id=eq.${setId}`,{method:'DELETE',prefer:'return=minimal'});
+  await sb(`question_sets?id=eq.${setId}`,{method:'DELETE',prefer:'return=minimal'});
+}
+
+// --- セット名変更 ---
+async function renameSetInDB(setId,name){
+  await sb(`question_sets?id=eq.${setId}`,{method:'PATCH',body:JSON.stringify({name}),prefer:'return=minimal'});
+}
+
+// --- 問題ごとの成績保存 ---
+async function saveQuestionResult(questionId, correct){
+  if(!currentUserId||!questionId)return;
+  try{
+    await sb('question_results',{
+      method:'POST',
+      body:JSON.stringify({user_id:currentUserId, question_id:questionId, correct}),
+      prefer:'return=minimal'
+    });
+  }catch(e){console.warn('saveQuestionResult error',e);}
+}
+
+// --- 問題ごとの成績取得（自分） ---
+async function fetchMyQuestionResults(){
+  if(!currentUserId)return[];
+  try{
+    return await sb(`question_results?user_id=eq.${currentUserId}&select=question_id,correct,answered_at&order=answered_at.desc`)||[];
+  }catch{return[];}
+}
+
+// --- 全ユーザーの問題別成績取得（管理者用） ---
+async function fetchAllQuestionResults(){
+  try{
+    return await sb(`question_results?select=user_id,question_id,correct,answered_at,users(nickname)&order=answered_at.desc&limit=2000`)||[];
+  }catch{return[];}
+}
+
+// --- ユーザー成績（セッション単位）---
+async function saveScore(correct,total,pct){
+  if(!currentUserId)return;
+  try{await sb('scores',{method:'POST',body:JSON.stringify({user_id:currentUserId,nickname:currentNickname,correct,total,pct}),prefer:'return=minimal'});}catch(e){console.warn('score error',e);}
+}
+async function fetchMyScores(){
+  if(!currentUserId)return[];
+  try{return await sb(`scores?user_id=eq.${currentUserId}&order=created_at.desc&limit=100&select=pct,correct,total,created_at`)||[];}catch{return[];}
+}
+async function fetchAllScores(){
+  try{return await sb('scores?select=nickname,pct,correct,total,created_at&order=created_at.desc')||[];}catch{return[];}
+}
+
+// --- 旧localStorage重み → question_resultsベースに切り替え ---
+function getW(){try{return JSON.parse(localStorage.getItem(WEIGHTS_KEY)||'{}');}catch{return{};}}
+function saveW(w){try{localStorage.setItem(WEIGHTS_KEY,JSON.stringify(w));}catch{}}
+function qKey(q){return q.id||q.text.slice(0,50);}
+
+async function syncWeight(q,correct){
+  await saveQuestionResult(q.id||null, correct);
+  // localStorageにもキャッシュ（重み計算用）
+  const w=getW();const k=qKey(q);
+  if(!w[k])w[k]={correct:0,wrong:0};
+  correct?w[k].correct++:w[k].wrong++;
+  saveW(w);
+}
+
+// --- ユーザー管理 ---
+async function getOrCreateUser(nick){
+  try{
+    const ex=await sb(`users?nickname=eq.${encodeURIComponent(nick)}&select=id,nickname`);
+    if(ex&&ex.length>0)return ex[0];
+    const cr=await sb('users',{method:'POST',body:JSON.stringify({nickname:nick})});
+    return cr[0];
+  }catch(e){console.warn('user error',e);return null;}
+}
 
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -800,15 +916,11 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 function shuffle(a){const r=[...a];for(let i=r.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[r[i],r[j]]=[r[j],r[i]];}return r;}
 function downloadCSV(fn,rows){const bom='\uFEFF';const csv=bom+rows.map(r=>r.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=fn;a.click();}
 function getAdminPw(){return localStorage.getItem(ADMIN_PW_KEY)||'admin1234';}
-function getW(){try{return JSON.parse(localStorage.getItem(WEIGHTS_KEY)||'{}');}catch{return{};}}
-function saveW(w){try{localStorage.setItem(WEIGHTS_KEY,JSON.stringify(w));}catch{}}
-function qKey(q){return q.text.slice(0,50);}
 
-async function getOrCreateUser(nick){try{const ex=await sb(`users?nickname=eq.${encodeURIComponent(nick)}&select=id,nickname`);if(ex&&ex.length>0)return ex[0];const cr=await sb('users',{method:'POST',body:JSON.stringify({nickname:nick})});return cr[0];}catch(e){console.warn('user error',e);return null;}}
-async function saveScore(correct,total,pct){if(!currentUserId)return;try{await sb('scores',{method:'POST',body:JSON.stringify({user_id:currentUserId,nickname:currentNickname,correct,total,pct}),prefer:'return=minimal'});}catch(e){console.warn('score error',e);}}
-async function fetchMyScores(){if(!currentUserId)return[];try{return await sb(`scores?user_id=eq.${currentUserId}&order=created_at.desc&limit=100&select=pct,correct,total,created_at`)||[];}catch{return[];}}
-async function fetchAllScores(){try{return await sb('scores?select=nickname,pct,correct,total,created_at&order=created_at.desc')||[];}catch{return[];}}
-async function syncWeight(q,correct){if(!currentUserId)return;const key=qKey(q);try{const ex=await sb(`question_weights?user_id=eq.${currentUserId}&question_key=eq.${encodeURIComponent(key)}&select=id,correct,wrong`);if(ex&&ex.length>0){const row=ex[0];await sb(`question_weights?id=eq.${row.id}`,{method:'PATCH',body:JSON.stringify({correct:row.correct+(correct?1:0),wrong:row.wrong+(correct?0:1),updated_at:new Date().toISOString()}),prefer:'return=minimal'});}else{await sb('question_weights',{method:'POST',body:JSON.stringify({user_id:currentUserId,question_key:key,correct:correct?1:0,wrong:correct?0:1}),prefer:'return=minimal'});}}catch(e){console.warn('weight sync error',e);}}
+function updateWeight(q,c){const w=getW();const k=qKey(q);if(!w[k])w[k]={correct:0,wrong:0};c?w[k].correct++:w[k].wrong++;saveW(w);syncWeight(q,c);}
+function calcWeight(q){const d=getW()[qKey(q)];if(!d||(d.correct===0&&d.wrong===0))return 3;return Math.max(1,Math.round(1+(d.wrong/(d.correct+d.wrong))*7));}
+function resetWeights(){saveW({});renderWStats();showToast('🗑️ 学習履歴をリセットしました');}
+function renderWStats(){const w=getW();const el=document.getElementById('weightStats');if(!el||!allQuestions.length)return;let u=0,m=0,wk=0;allQuestions.forEach(q=>{const d=w[qKey(q)];if(!d||(d.correct===0&&d.wrong===0)){u++;return;}(d.correct/(d.correct+d.wrong)>=0.8)?m++:wk++;});el.innerHTML=`<span style="color:var(--text-muted)">未回答 <strong style="color:var(--text)">${u}</strong></span><span style="color:var(--green)">習得済 <strong>${m}</strong></span><span style="color:var(--red)">苦手 <strong>${wk}</strong></span>`;}
 
 // NICKNAME
 document.getElementById('nickBtn').addEventListener('click',submitNickname);
@@ -822,7 +934,11 @@ async function submitNickname(){
   if(user){currentUserId=user.id;currentNickname=user.nickname;}
   else{currentNickname=val;currentUserId=localStorage.getItem(LS_UID)||'local_'+Date.now();showToast('⚠️ オフラインモードで続行します');}
   localStorage.setItem(LS_NICK,currentNickname);localStorage.setItem(LS_UID,currentUserId);
-  updateChips();loadSets();rebuildAllQuestions();initHome();showScreen('homeScreen');
+  updateChips();
+  showToast('📥 問題データを同期中...');
+  await fetchSetsFromDB();
+  rebuildAllQuestions();
+  initHome();showScreen('homeScreen');
 }
 function updateChips(){const t='👤 '+(currentNickname||'—');document.getElementById('userChip').textContent=t;document.getElementById('userChipStats').textContent=t;}
 document.getElementById('userChip').addEventListener('click',changeNick);
@@ -853,17 +969,13 @@ async function initHome(){
   row.innerHTML=`<div class="recent-score-box"><div class="rs-num" style="color:${lc}">${last.pct}%</div><div class="rs-lbl">前回</div><div class="rs-sub">${last.correct}/${last.total}問</div></div><div class="recent-score-box"><div class="rs-num" style="color:var(--accent)">${avg}%</div><div class="rs-lbl">平均（直近10）</div><div class="rs-sub">${scores.length}回受験</div></div><div class="recent-score-box"><div class="rs-num" style="color:var(--green)">${best}%</div><div class="rs-lbl">ベスト</div><div class="rs-sub">最高スコア</div></div>`;
 }
 
-function updateWeight(q,c){const w=getW();const k=qKey(q);if(!w[k])w[k]={correct:0,wrong:0};c?w[k].correct++:w[k].wrong++;saveW(w);syncWeight(q,c);}
-function calcWeight(q){const d=getW()[qKey(q)];if(!d||(d.correct===0&&d.wrong===0))return 3;return Math.max(1,Math.round(1+(d.wrong/(d.correct+d.wrong))*7));}
-function resetWeights(){saveW({});renderWStats();showToast('🗑️ 学習履歴をリセットしました');}
-function renderWStats(){const w=getW();const el=document.getElementById('weightStats');if(!el||!allQuestions.length)return;let u=0,m=0,wk=0;allQuestions.forEach(q=>{const d=w[qKey(q)];if(!d||(d.correct===0&&d.wrong===0)){u++;return;}(d.correct/(d.correct+d.wrong)>=0.8)?m++:wk++;});el.innerHTML=`<span style="color:var(--text-muted)">未回答 <strong style="color:var(--text)">${u}</strong></span><span style="color:var(--green)">習得済 <strong>${m}</strong></span><span style="color:var(--red)">苦手 <strong>${wk}</strong></span>`;}
 document.getElementById('decBtn').addEventListener('click',()=>{if(questionCount>1){questionCount--;document.getElementById('questionCount').textContent=questionCount;}});
 document.getElementById('incBtn').addEventListener('click',()=>{if(questionCount<allQuestions.length){questionCount++;document.getElementById('questionCount').textContent=questionCount;}});
 document.getElementById('weakModeToggle').addEventListener('change',e=>{weakPriorityMode=e.target.checked;showToast(weakPriorityMode?'🎯 苦手優先モード ON':'🔀 ランダムモード ON');});
 document.getElementById('resetWeightsBtn').addEventListener('click',resetWeights);
 document.getElementById('startBtn').addEventListener('click',()=>{showScreen('selectScreen');renderSetCards();});
 
-// SET CARDS （問題選択画面）
+// SET CARDS
 document.getElementById('selBackBtn').addEventListener('click',()=>showScreen('homeScreen'));
 
 function renderSetCards(){
@@ -877,7 +989,6 @@ function renderSetCards(){
   questionSets.forEach(set=>{
     const qs=set.questions||[];
     const total=qs.length;
-    // 進捗計算（一度でも回答した問題数）
     const answered=qs.filter(q=>{const d=w[qKey(q)];return d&&(d.correct+d.wrong)>0;}).length;
     const weakCount=qs.filter(q=>{const d=w[qKey(q)];return d&&d.wrong>0&&d.wrong/(d.correct+d.wrong)>=0.5;}).length;
     const pct=total>0?Math.round(answered/total*100):0;
@@ -1280,10 +1391,11 @@ document.querySelectorAll('.admin-tab').forEach(btn=>btn.addEventListener('click
 // switchTabは下部で定義
 
 // CSV
+// CSV PARSE
 function pLine(line){const r=[];let cur='',inQ=false;for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){inQ=!inQ;continue;}if(ch===','&&!inQ){r.push(cur);cur='';continue;}cur+=ch;}r.push(cur);return r;}
 function pCSV(text){text=text.replace(/^\uFEFF/,'');const lines=text.split(/\r?\n/).filter(l=>l.trim());const qs=[];for(let i=0;i<lines.length;i++){if(i===0&&/^(問題|question|Q)/i.test(lines[i]))continue;const cols=pLine(lines[i]);if(cols.length<3)continue;const q=cols[0]?.trim(),type=cols[1]?.trim().toLowerCase();if(!q||!type)continue;if(type==='multi'||type==='4択'||type==='multiple'){const c1=cols[2]?.trim(),c2=cols[3]?.trim(),c3=cols[4]?.trim(),c4=cols[5]?.trim(),ans=parseInt(cols[6]?.trim());if(!c1||!c2||!c3||!c4||isNaN(ans)||ans<1||ans>4)continue;qs.push({text:q,type:'multi',choices:[c1,c2,c3,c4],answer:ans,explanation:cols[7]?.trim()||''});}else if(type==='tf'||type==='○×'||type==='truefalse'){const ans=cols[2]?.trim();if(!ans)continue;qs.push({text:q,type:'tf',answer:ans,explanation:cols[7]?.trim()||''}); }}return qs;}
 
-// UPLOAD（セット名付き）
+// UPLOAD（Supabaseに保存）
 const ua=document.getElementById('uploadArea'),fi=document.getElementById('fileInput');
 ua.addEventListener('click',()=>fi.click());
 ua.addEventListener('dragover',e=>{e.preventDefault();ua.classList.add('dragover');});
@@ -1291,35 +1403,38 @@ ua.addEventListener('dragleave',()=>ua.classList.remove('dragover'));
 ua.addEventListener('drop',e=>{e.preventDefault();ua.classList.remove('dragover');hFile(e.dataTransfer.files[0]);});
 fi.addEventListener('change',e=>hFile(e.target.files[0]));
 
-function hFile(file){
+async function hFile(file){
   if(!file)return;
-  const r=new FileReader();
-  r.onload=e=>{
+  const reader=new FileReader();
+  reader.onload=async e=>{
     try{
       const qs=pCSV(e.target.result);
       if(!qs.length){showToast('⚠️ 問題を読み込めませんでした');return;}
       const nameInput=document.getElementById('setNameInput');
       const name=nameInput.value.trim()||file.name.replace(/\.csv$/i,'');
-      const newSet={id:genId(),name,questions:qs,createdAt:new Date().toISOString()};
-      questionSets.push(newSet);
-      saveSets();rebuildAllQuestions();
+      const li=document.getElementById('loadedInfo');
+      li.textContent='⏳ Supabaseに保存中…';li.classList.add('show');
+      await uploadSetToDB(name,qs);
       nameInput.value='';
-      document.getElementById('loadedInfo').textContent=`✅「${name}」— ${qs.length}問 登録完了`;
-      document.getElementById('loadedInfo').classList.add('show');
+      li.textContent=`✅「${name}」— ${qs.length}問 登録完了（全端末で共有されます）`;
+      await fetchSetsFromDB();rebuildAllQuestions();
       renderAdminSetList();initHome();
-      showToast(`✅「${name}」${qs.length}問を登録しました`);
-    }catch(err){showToast('⚠️ 読み込みエラー: '+err.message);}
+      showToast(`✅「${name}」${qs.length}問をSupabaseに登録しました`);
+    }catch(err){showToast('⚠️ 登録エラー: '+err.message);console.error(err);}
   };
-  r.readAsText(file,'UTF-8');
+  reader.readAsText(file,'UTF-8');
 }
 
-document.getElementById('sampleBtn').addEventListener('click',()=>{
+document.getElementById('sampleBtn').addEventListener('click',async()=>{
   const name='サンプル（循環器・救急基礎）';
-  const newSet={id:genId(),name,questions:JSON.parse(JSON.stringify(SAMPLE)),createdAt:new Date().toISOString()};
-  questionSets.push(newSet);saveSets();rebuildAllQuestions();
-  document.getElementById('loadedInfo').textContent=`✅「${name}」— ${SAMPLE.length}問 登録完了`;
-  document.getElementById('loadedInfo').classList.add('show');
-  renderAdminSetList();initHome();showToast('サンプル12問を登録しました');
+  const li=document.getElementById('loadedInfo');
+  li.textContent='⏳ Supabaseに保存中…';li.classList.add('show');
+  try{
+    await uploadSetToDB(name,SAMPLE);
+    li.textContent=`✅「${name}」— ${SAMPLE.length}問 登録完了`;
+    await fetchSetsFromDB();rebuildAllQuestions();
+    renderAdminSetList();initHome();showToast('サンプル12問を登録しました');
+  }catch(err){showToast('⚠️ 登録エラー: '+err.message);}
 });
 
 // 管理者セット一覧
@@ -1327,7 +1442,7 @@ function renderAdminSetList(){
   const list=document.getElementById('adminSetList');
   if(!questionSets.length){list.innerHTML='<div style="text-align:center;color:var(--text-muted);font-size:0.8rem;padding:12px">まだセットがありません</div>';return;}
   list.innerHTML='';
-  questionSets.forEach((set,i)=>{
+  questionSets.forEach((set)=>{
     const div=document.createElement('div');div.className='admin-set-item';
     const date=set.createdAt?new Date(set.createdAt).toLocaleDateString('ja-JP'):'';
     div.innerHTML=`
@@ -1336,23 +1451,24 @@ function renderAdminSetList(){
         <div class="admin-set-meta">${(set.questions||[]).length}問 ${date?'• '+date:''}</div>
       </div>
       <div class="admin-set-actions">
-        <button class="icon-btn edit" data-i="${i}" title="名前変更">✏️</button>
-        <button class="icon-btn del" data-i="${i}" title="削除">🗑️</button>
+        <button class="icon-btn edit" data-id="${set.id}" title="名前変更">✏️</button>
+        <button class="icon-btn del" data-id="${set.id}" title="削除">🗑️</button>
       </div>`;
     list.appendChild(div);
   });
-  list.querySelectorAll('.icon-btn.edit').forEach(btn=>btn.addEventListener('click',()=>{
-    const idx=parseInt(btn.dataset.i);
-    const n=prompt('セット名を変更',questionSets[idx].name);
+  list.querySelectorAll('.icon-btn.edit').forEach(btn=>btn.addEventListener('click',async()=>{
+    const sid=btn.dataset.id;const set=getSetById(sid);if(!set)return;
+    const n=prompt('セット名を変更',set.name);
     if(!n||!n.trim())return;
-    questionSets[idx].name=n.trim();saveSets();renderAdminSetList();initHome();showToast('✅ セット名を変更しました');
+    try{await renameSetInDB(sid,n.trim());await fetchSetsFromDB();rebuildAllQuestions();renderAdminSetList();initHome();showToast('✅ セット名を変更しました');}
+    catch(err){showToast('⚠️ 変更エラー: '+err.message);}
   }));
-  list.querySelectorAll('.icon-btn.del').forEach(btn=>btn.addEventListener('click',()=>{
-    const idx=parseInt(btn.dataset.i);
-    if(!confirm(`「${questionSets[idx].name}」を削除しますか？`))return;
-    questionSets.splice(idx,1);saveSets();rebuildAllQuestions();renderAdminSetList();initHome();showToast('🗑️ セットを削除しました');
+  list.querySelectorAll('.icon-btn.del').forEach(btn=>btn.addEventListener('click',async()=>{
+    const sid=btn.dataset.id;const set=getSetById(sid);if(!set)return;
+    if(!confirm(`「${set.name}」を削除しますか？（全端末から削除されます）`))return;
+    try{await deleteSetFromDB(sid);await fetchSetsFromDB();rebuildAllQuestions();renderAdminSetList();initHome();showToast('🗑️ セットを削除しました');}
+    catch(err){showToast('⚠️ 削除エラー: '+err.message);}
   }));
-  // 編集タブのセレクトも更新
   const sel=document.getElementById('adminEditSetSel');
   if(sel){
     const cur=sel.value;
@@ -1361,7 +1477,7 @@ function renderAdminSetList(){
   }
 }
 
-// Q EDITOR（セット単位）
+// Q EDITOR（Supabase連携）
 document.getElementById('adminEditSetSel').addEventListener('change',e=>{
   editingSetId=e.target.value||null;
   document.getElementById('addQBtn').style.display=editingSetId?'block':'none';
@@ -1389,10 +1505,8 @@ function renderQL(){
 
 function openEF(idx){
   editingIdx=idx;
-  const set=getSetById(editingSetId);
-  if(!set)return;
-  const qs=set.questions||[];
-  const q=idx!==null?qs[idx]:null;
+  const set=getSetById(editingSetId);if(!set)return;
+  const qs=set.questions||[];const q=idx!==null?qs[idx]:null;
   const wrap=document.getElementById('editFormWrap');const im=q?q.type==='multi':true;
   wrap.innerHTML=`<div class="edit-form">
     <label>問題文</label><textarea class="edit-textarea" id="ef-text" rows="3">${q?q.text:''}</textarea>
@@ -1421,7 +1535,7 @@ function openEF(idx){
   wrap.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-function saveEF(){
+async function saveEF(){
   const set=getSetById(editingSetId);if(!set)return;
   const text=document.getElementById('ef-text').value.trim(),type=document.getElementById('ef-type').value;
   if(!text){showToast('⚠️ 問題文を入力してください');return;}
@@ -1432,17 +1546,29 @@ function saveEF(){
     if(isNaN(ans)||ans<1||ans>4){showToast('⚠️ 正解番号は1〜4で入力してください');return;}
     newQ={text,type:'multi',choices:[c1,c2,c3,c4],answer:ans,explanation:document.getElementById('ef-exp').value.trim()};
   }else{newQ={text,type:'tf',answer:document.getElementById('ef-tfa').value,explanation:document.getElementById('ef-exp').value.trim()};}
-  if(!set.questions)set.questions=[];
-  if(editingIdx===null){set.questions.push(newQ);showToast('✅ 問題を追加しました');}
-  else{set.questions[editingIdx]=newQ;showToast('✅ 問題を保存しました');}
-  saveSets();rebuildAllQuestions();
-  document.getElementById('editFormWrap').innerHTML='';editingIdx=null;renderQL();initHome();
+  try{
+    const sort_order=editingIdx===null?(set.questions||[]).length:editingIdx;
+    if(editingIdx===null){
+      await sb('questions',{method:'POST',body:JSON.stringify({set_id:set.id,text:newQ.text,type:newQ.type,choices:newQ.choices||null,answer:String(newQ.answer),explanation:newQ.explanation,sort_order}),prefer:'return=minimal'});
+      showToast('✅ 問題を追加しました');
+    }else{
+      const qid=(set.questions||[])[editingIdx]?.id;
+      if(qid)await sb(`questions?id=eq.${qid}`,{method:'PATCH',body:JSON.stringify({text:newQ.text,type:newQ.type,choices:newQ.choices||null,answer:String(newQ.answer),explanation:newQ.explanation}),prefer:'return=minimal'});
+      showToast('✅ 問題を保存しました');
+    }
+    await fetchSetsFromDB();rebuildAllQuestions();
+    document.getElementById('editFormWrap').innerHTML='';editingIdx=null;renderQL();initHome();
+  }catch(err){showToast('⚠️ 保存エラー: '+err.message);}
 }
 
-function delQ(idx){
+async function delQ(idx){
   const set=getSetById(editingSetId);if(!set)return;
   if(!confirm(`Q${idx+1}「${set.questions[idx].text.slice(0,30)}…」を削除しますか？`))return;
-  set.questions.splice(idx,1);saveSets();rebuildAllQuestions();renderQL();initHome();showToast('🗑️ 問題を削除しました');
+  try{
+    const qid=set.questions[idx]?.id;
+    if(qid)await sb(`questions?id=eq.${qid}`,{method:'DELETE',prefer:'return=minimal'});
+    await fetchSetsFromDB();rebuildAllQuestions();renderQL();initHome();showToast('🗑️ 問題を削除しました');
+  }catch(err){showToast('⚠️ 削除エラー: '+err.message);}
 }
 
 // WEAK PANEL
@@ -1450,27 +1576,51 @@ document.querySelectorAll('.filter-chip').forEach(chip=>chip.addEventListener('c
 function renderWP(){const list=document.getElementById('weakDataList');const w=getW();if(!allQuestions.length){list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.82rem">問題が登録されていません</div>';return;}const items=allQuestions.map(q=>{const k=qKey(q);const d=w[k];const tot=d?d.correct+d.wrong:0;const wr=tot>0?d.wrong/tot:null;return{q,d,tot,wr,cat:tot===0?'untouched':wr>=0.2?'weak':'mastered'};}).filter(x=>weakFilter==='all'||x.cat===weakFilter).sort((a,b)=>(b.wr??-1)-(a.wr??-1));list.innerHTML='';if(!items.length){list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.82rem">該当なし</div>';return;}items.forEach(({q,d,tot,wr})=>{const div=document.createElement('div');div.className='weak-item';const pct=wr!==null?Math.round(wr*100):null;const col=pct===null?'var(--text-muted)':pct>=50?'var(--red)':pct>=20?'var(--accent)':'var(--green)';div.innerHTML=`<div class="weak-item-q">${q.text.slice(0,60)}${q.text.length>60?'…':''}</div><div class="weak-item-bar-wrap"><div class="weak-bar-bg"><div class="weak-bar-fill" style="width:${pct??0}%;background:${col}"></div></div><div class="weak-bar-label" style="color:${col}">${pct===null?'未回答':'不正解率 '+pct+'%'}${tot>0?` <span style="color:var(--text-muted)">(${d.correct}○/${d.wrong}×)</span>`:''}</div></div>`;list.appendChild(div);});}
 document.getElementById('clearWeakBtn').addEventListener('click',()=>{if(!confirm('自分の苦手データをリセットしますか？'))return;resetWeights();renderWP();initHome();});
 
-// ALL SCORES
+// ALL SCORES（問題別成績）
 async function renderAS(){
-  const list=document.getElementById('allScoresList');list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.82rem">読み込み中…</div>';
-  const all=await fetchAllScores();if(!all.length){list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.82rem">成績データがありません</div>';return;}
-  const map={};all.forEach(s=>{if(!map[s.nickname])map[s.nickname]={scores:[],total:0,correct:0};map[s.nickname].scores.push(s.pct);map[s.nickname].total+=s.total;map[s.nickname].correct+=s.correct;});
-  const users=Object.entries(map).map(([nick,u])=>({nick,avg:Math.round(u.scores.reduce((a,x)=>a+x,0)/u.scores.length),sessions:u.scores.length,best:Math.max(...u.scores),correct:u.correct,total:u.total})).sort((a,b)=>b.avg-a.avg);
-  list.innerHTML='';const rc=['#ffd700','#c0c0c0','#cd7f32'];
-  users.forEach((u,i)=>{const col=u.avg>=80?'var(--green)':u.avg>=60?'var(--accent)':'var(--red)';const div=document.createElement('div');div.className='all-scores-item';div.innerHTML=`<div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;color:${i<3?rc[i]:'var(--text-muted)'};min-width:22px">${i+1}</div><div class="all-scores-bar-wrap"><div class="all-scores-nick">${u.nick}</div><div class="all-scores-bar-bg"><div class="all-scores-bar-fill" style="width:${u.avg}%;background:${col}"></div></div><div class="all-scores-meta">${u.sessions}回受験　ベスト ${u.best}%　累計 ${u.correct}/${u.total}問正解</div></div><div class="all-scores-pct" style="color:${col}">${u.avg}%<div style="font-size:0.6rem;color:var(--text-muted);font-weight:400">平均</div></div>`;list.appendChild(div);});
+  const list=document.getElementById('allScoresList');
+  list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:16px;font-size:0.82rem">読み込み中…</div>';
+  try{
+    const res=await sb('question_results?select=user_id,question_id,correct,users(nickname)&order=answered_at.desc&limit=5000')||[];
+    if(!res.length){list.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.82rem">成績データがありません</div>';return;}
+    const map={};
+    res.forEach(r=>{
+      const nick=r.users?.nickname||r.user_id||'不明';
+      if(!map[nick])map[nick]={correct:0,total:0};
+      map[nick].total++;
+      if(r.correct)map[nick].correct++;
+    });
+    const users=Object.entries(map).map(([nick,u])=>({nick,correct:u.correct,total:u.total,pct:Math.round(u.correct/u.total*100)})).sort((a,b)=>b.pct-a.pct);
+    list.innerHTML='';const rc=['#ffd700','#c0c0c0','#cd7f32'];
+    users.forEach((u,i)=>{
+      const col=u.pct>=80?'var(--green)':u.pct>=60?'var(--accent)':'var(--red)';
+      const div=document.createElement('div');div.className='all-scores-item';
+      div.innerHTML=`<div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;color:${i<3?rc[i]:'var(--text-muted)'};min-width:22px">${i+1}</div><div class="all-scores-bar-wrap"><div class="all-scores-nick">${u.nick}</div><div class="all-scores-bar-bg"><div class="all-scores-bar-fill" style="width:${u.pct}%;background:${col}"></div></div><div class="all-scores-meta">正解 ${u.correct}/${u.total}問（問題別累計）</div></div><div class="all-scores-pct" style="color:${col}">${u.pct}%</div>`;
+      list.appendChild(div);
+    });
+  }catch(e){list.innerHTML='<div style="text-align:center;color:var(--wrong);padding:20px;font-size:0.82rem">取得エラー: '+e.message+'</div>';}
 }
 document.getElementById('refreshAllScoresBtn').addEventListener('click',renderAS);
 
 // EXPORT
-document.getElementById('exportQuestionsBtn').addEventListener('click',()=>{if(!allQuestions.length){showToast('⚠️ 問題が登録されていません');return;}const rows=[['セット名','問題文','種別','選択肢A','選択肢B','選択肢C','選択肢D','正解番号','解説']];questionSets.forEach(set=>{(set.questions||[]).forEach(q=>{if(q.type==='multi')rows.push([set.name,q.text,'multi',...q.choices,q.answer,q.explanation||'']);else rows.push([set.name,q.text,'tf',q.answer,'','','','',q.explanation||'']);});});downloadCSV('ems_questions.csv',rows);showToast('📋 問題CSVをエクスポートしました');});
+document.getElementById('exportQuestionsBtn').addEventListener('click',()=>{if(!allQuestions.length){showToast('⚠️ 問題が登録されていません');return;}const rows=[['セット名','問題文','種別','選択肢A','選択肢B','選択肢C','選択肢D','正解番号','解説']];questionSets.forEach(set=>{(set.questions||[]).forEach(q=>{if(q.type==='multi')rows.push([set.name,q.text,'multi',...(q.choices||[]),q.answer,q.explanation||'']);else rows.push([set.name,q.text,'tf',q.answer,'','','','',q.explanation||'']);});});downloadCSV('ems_questions.csv',rows);showToast('📋 問題CSVをエクスポートしました');});
 document.getElementById('exportWeakBtn').addEventListener('click',()=>{const w=getW();const rows=[['問題文','正解数','不正解数','合計','正解率']];allQuestions.forEach(q=>{const d=w[qKey(q)]||{correct:0,wrong:0};const t=d.correct+d.wrong;rows.push([q.text,d.correct,d.wrong,t,t>0?Math.round(d.correct/t*100)+'%':'-']);});downloadCSV('ems_weak_data.csv',rows);showToast('⚠️ 苦手データをエクスポートしました');});
-document.getElementById('exportAllScoresBtn').addEventListener('click',async()=>{showToast('取得中…');const all=await fetchAllScores();if(!all.length){showToast('⚠️ 成績データがありません');return;}const rows=[['ニックネーム','正解数','問題数','正解率','日時']];all.forEach(s=>rows.push([s.nickname,s.correct,s.total,s.pct+'%',(s.created_at||'').slice(0,16)]));downloadCSV('ems_all_scores.csv',rows);showToast('👥 全員の成績をエクスポートしました');});
+document.getElementById('exportAllScoresBtn').addEventListener('click',async()=>{
+  showToast('取得中…');
+  try{
+    const res=await sb('question_results?select=user_id,question_id,correct,answered_at,users(nickname),questions(text)&order=answered_at.desc')||[];
+    if(!res.length){showToast('⚠️ 成績データがありません');return;}
+    const rows=[['ニックネーム','問題文','正誤','回答日時']];
+    res.forEach(r=>rows.push([r.users?.nickname||r.user_id,r.questions?.text||r.question_id,r.correct?'正解':'不正解',(r.answered_at||'').slice(0,16)]));
+    downloadCSV('ems_question_results.csv',rows);showToast('👥 問題別成績をエクスポートしました');
+  }catch(e){showToast('⚠️ エクスポートエラー: '+e.message);}
+});
 
 // PASSWORD
 document.getElementById('changePwBtn').addEventListener('click',()=>{const p1=document.getElementById('newPw1').value,p2=document.getElementById('newPw2').value;if(!p1){showToast('⚠️ 新しいパスワードを入力してください');return;}if(p1!==p2){showToast('⚠️ パスワードが一致しません');return;}if(p1.length<4){showToast('⚠️ 4文字以上で設定してください');return;}localStorage.setItem(ADMIN_PW_KEY,p1);document.getElementById('newPw1').value='';document.getElementById('newPw2').value='';showToast('🔑 パスワードを変更しました');});
 
-// switchTabにadminSetList更新を追加
 function switchTab(tab){document.querySelectorAll('.admin-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.admin-panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab));if(tab==='upload')renderAdminSetList();if(tab==='questions'){renderAdminSetList();renderQL();}if(tab==='weak')renderWP();if(tab==='allscores')renderAS();}
+
 
 // ===== MOTIVATION SYSTEM =====
 let comboCount=0;
@@ -1677,10 +1827,17 @@ function resetMotivation(){
 }
 
 // ===== INIT =====
-(function(){
+(async function(){
   const nick=localStorage.getItem(LS_NICK),uid=localStorage.getItem(LS_UID);
-  if(nick&&uid){currentNickname=nick;currentUserId=uid;loadSets();rebuildAllQuestions();updateChips();initHome();renderResumeBanner();showScreen('homeScreen');}
-  else{showScreen('nickScreen');}
+  if(nick&&uid){
+    currentNickname=nick;currentUserId=uid;
+    // キャッシュから先に表示してUXを速く
+    questionSets=getCachedSets();rebuildAllQuestions();
+    updateChips();initHome();renderResumeBanner();showScreen('homeScreen');
+    // バックグラウンドでSupabaseと同期
+    const ok=await fetchSetsFromDB();
+    if(ok){rebuildAllQuestions();initHome();renderSetCards&&document.getElementById('selectScreen').classList.contains('active')&&renderSetCards();}
+  }else{showScreen('nickScreen');}
 })();
 </script>
 </body>
