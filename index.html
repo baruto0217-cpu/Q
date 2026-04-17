@@ -74,6 +74,27 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
 .start-btn:disabled{background:var(--surface2);color:var(--text-muted);box-shadow:none;cursor:not-allowed;transform:none;}
 .progress-bar{height:3px;background:var(--surface2);border-radius:2px;margin-bottom:20px;overflow:hidden;}
 .progress-fill{height:100%;background:linear-gradient(90deg,var(--red),#ff6b6b);border-radius:2px;transition:width 0.4s ease;}
+
+/* QUIZ MENU */
+.quiz-menu-btn{background:var(--surface2);border:1px solid var(--border);border-radius:8px;width:34px;height:34px;font-size:1.2rem;cursor:pointer;color:var(--text-muted);display:flex;align-items:center;justify-content:center;transition:all 0.2s;flex-shrink:0;letter-spacing:-2px;}
+.quiz-menu-btn:hover{border-color:var(--accent);color:var(--accent);}
+.quiz-menu-panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;animation:fadeUp 0.2s ease;}
+.qm-title{font-size:0.78rem;font-weight:700;color:var(--text-muted);margin-bottom:12px;letter-spacing:0.06em;}
+.qm-btn{width:100%;padding:13px 16px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text);font-size:0.88rem;font-weight:600;cursor:pointer;font-family:'Noto Sans JP',sans-serif;text-align:left;margin-bottom:8px;transition:all 0.18s;display:flex;align-items:center;gap:8px;}
+.qm-btn:last-child{margin-bottom:0;}
+.qm-btn.save:hover{border-color:var(--green);color:var(--green);background:var(--green-bg);}
+.qm-btn.resume{background:rgba(34,197,94,0.06);border-color:rgba(34,197,94,0.35);color:var(--green);}
+.qm-btn.resume:hover{background:var(--green-bg);}
+.qm-btn.end:hover{border-color:var(--accent);color:var(--accent);background:rgba(56,189,248,0.06);}
+.qm-btn.abort:hover{border-color:var(--wrong);color:var(--wrong);background:var(--wrong-bg);}
+.qm-btn.close:hover{border-color:var(--text-muted);color:var(--text);}
+
+/* 保存済みバナー */
+.resume-banner{background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;animation:fadeUp 0.3s ease;}
+.resume-banner-info{font-size:0.82rem;color:var(--green);}
+.resume-banner-sub{font-size:0.72rem;color:var(--text-muted);margin-top:2px;}
+.resume-banner-btn{padding:7px 14px;background:var(--green);border:none;border-radius:8px;color:white;font-size:0.8rem;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap;flex-shrink:0;transition:opacity 0.2s;}
+.resume-banner-btn:hover{opacity:0.85;}
 .quiz-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
 .q-counter{font-size:0.78rem;color:var(--text-muted);font-weight:500;letter-spacing:0.06em;}
 .q-counter strong{color:var(--text);font-size:0.95rem;}
@@ -357,6 +378,7 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
       <div class="home-hero-icon">🚑</div>
       <div class="home-hero-title">EMS TRAINING QUIZ</div>
     </div>
+    <div id="resumeBannerBox" style="display:none"></div>
     <div class="home-no-questions" id="noQuestionsBox">
       <div class="home-no-q-icon">📂</div>
       <div class="home-no-q-text">問題がまだ登録されていません</div>
@@ -410,7 +432,19 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
 
   <!-- QUIZ -->
   <div id="quizScreen" class="screen">
-    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="progress-bar" style="flex:1;margin-bottom:0;margin-right:12px"><div class="progress-fill" id="progressFill"></div></div>
+      <button class="quiz-menu-btn" id="quizMenuBtn" title="メニュー">⋯</button>
+    </div>
+    <!-- 中断メニュー -->
+    <div class="quiz-menu-panel" id="quizMenuPanel" style="display:none">
+      <div class="qm-title">⏸ クイズメニュー</div>
+      <button class="qm-btn save" id="qmSaveBtn">💾 ここまでの進捗を保存</button>
+      <button class="qm-btn resume" id="qmResumeBtn" style="display:none">▶️ 保存済みの続きから再開</button>
+      <button class="qm-btn end" id="qmEndBtn">🏁 ここで終了して結果を見る</button>
+      <button class="qm-btn abort" id="qmAbortBtn">✕ 中断してホームへ戻る</button>
+      <button class="qm-btn close" id="qmCloseBtn">← 問題に戻る</button>
+    </div>
     <div class="quiz-meta">
       <div class="q-counter">問題 <strong id="qIndex">1</strong> / <span id="qTotal">10</span></div>
       <div class="q-type-badge" id="qTypeBadge">4択</div>
@@ -847,6 +881,121 @@ function handleTF(sel,q){
 }
 
 let autoNextTimer=null;
+
+// ===== QUIZ MENU =====
+const SAVE_KEY='emsQuizProgress';
+
+function saveProgress(){
+  const data={
+    sessionQuestions,
+    currentIdx,
+    results,
+    savedAt:new Date().toISOString()
+  };
+  try{localStorage.setItem(SAVE_KEY,JSON.stringify(data));return true;}catch{return false;}
+}
+function loadProgress(){
+  try{const d=localStorage.getItem(SAVE_KEY);return d?JSON.parse(d):null;}catch{return null;}
+}
+function clearProgress(){
+  try{localStorage.removeItem(SAVE_KEY);}catch{}
+}
+
+// ホーム画面に再開バナー表示
+function renderResumeBanner(){
+  const box=document.getElementById('resumeBannerBox');
+  const prog=loadProgress();
+  if(!prog||!prog.sessionQuestions||prog.sessionQuestions.length===0){box.style.display='none';return;}
+  const remaining=prog.sessionQuestions.length-prog.currentIdx;
+  const answered=prog.results?prog.results.length:0;
+  const correct=prog.results?prog.results.filter(r=>r.correct).length:0;
+  const date=new Date(prog.savedAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  box.style.display='block';
+  box.innerHTML=`<div class="resume-banner">
+    <div>
+      <div class="resume-banner-info">💾 保存済みの途中データがあります</div>
+      <div class="resume-banner-sub">${date} 保存 ／ 残り ${remaining}問 ／ ${answered}問回答済（${correct}問正解）</div>
+    </div>
+    <button class="resume-banner-btn" id="resumeFromBanner">再開 ▶</button>
+  </div>`;
+  document.getElementById('resumeFromBanner').addEventListener('click',()=>{
+    const p=loadProgress();
+    if(!p)return;
+    sessionQuestions=p.sessionQuestions;
+    currentIdx=p.currentIdx;
+    results=p.results||[];
+    showScreen('quizScreen');
+    renderQ();
+    updateQuizMenuResumeBtn();
+  });
+}
+
+function updateQuizMenuResumeBtn(){
+  const btn=document.getElementById('qmResumeBtn');
+  if(!btn)return;
+  const prog=loadProgress();
+  // 現在進行中のセッションと別の保存データがあるか
+  const hasSaved=prog&&prog.sessionQuestions&&prog.savedAt;
+  btn.style.display=hasSaved?'flex':'none';
+}
+
+// メニュー開閉
+document.getElementById('quizMenuBtn').addEventListener('click',()=>{
+  const panel=document.getElementById('quizMenuPanel');
+  const isOpen=panel.style.display!=='none';
+  panel.style.display=isOpen?'none':'block';
+  if(!isOpen){
+    // タイマー停止
+    if(autoNextTimer){clearInterval(autoNextTimer);autoNextTimer=null;
+      const cd=document.getElementById('autoCountdown');
+      if(cd)cd.textContent='(停止中)';
+    }
+    updateQuizMenuResumeBtn();
+  }
+});
+
+document.getElementById('qmCloseBtn').addEventListener('click',()=>{
+  document.getElementById('quizMenuPanel').style.display='none';
+});
+
+document.getElementById('qmSaveBtn').addEventListener('click',()=>{
+  const ok=saveProgress();
+  if(ok){
+    showToast('💾 進捗を保存しました');
+    document.getElementById('quizMenuPanel').style.display='none';
+    updateQuizMenuResumeBtn();
+  }else{
+    showToast('⚠️ 保存に失敗しました');
+  }
+});
+
+document.getElementById('qmResumeBtn').addEventListener('click',()=>{
+  const p=loadProgress();
+  if(!p){showToast('⚠️ 保存データがありません');return;}
+  if(autoNextTimer){clearInterval(autoNextTimer);autoNextTimer=null;}
+  sessionQuestions=p.sessionQuestions;
+  currentIdx=p.currentIdx;
+  results=p.results||[];
+  document.getElementById('quizMenuPanel').style.display='none';
+  renderQ();
+});
+
+document.getElementById('qmEndBtn').addEventListener('click',()=>{
+  if(autoNextTimer){clearInterval(autoNextTimer);autoNextTimer=null;}
+  document.getElementById('quizMenuPanel').style.display='none';
+  if(results.length===0){showToast('⚠️ まだ1問も回答していません');return;}
+  clearProgress();
+  showResult();
+});
+
+document.getElementById('qmAbortBtn').addEventListener('click',()=>{
+  if(!confirm('クイズを中断してホームに戻りますか？\n（進捗は保存されていない場合、失われます）'))return;
+  if(autoNextTimer){clearInterval(autoNextTimer);autoNextTimer=null;}
+  document.getElementById('quizMenuPanel').style.display='none';
+  showScreen('homeScreen');
+  renderResumeBanner();
+  initHome();
+});
 function showFB(q,c){
   if(autoNextTimer){clearTimeout(autoNextTimer);autoNextTimer=null;}
   const exp=document.getElementById('explanationBox');
@@ -902,6 +1051,7 @@ document.getElementById('nextBtn').addEventListener('click',goNext);
 
 // RESULT
 async function showResult(){
+  clearProgress(); // 完了時は保存データ削除
   showScreen('resultScreen');
   const c=results.filter(r=>r.correct).length,t=results.length,pct=Math.round(c/t*100);
   await saveScore(c,t,pct);
@@ -953,8 +1103,16 @@ async function showResult(){
     rl.appendChild(div);
   });
 }
-document.getElementById('retryBtn').addEventListener('click',()=>{currentIdx=0;results=[];sessionQuestions=shuffle(sessionQuestions);showScreen('quizScreen');renderQ();});
-document.getElementById('backBtn').addEventListener('click',()=>{showScreen('homeScreen');initHome();});
+document.getElementById('retryBtn').addEventListener('click',()=>{
+  clearProgress();
+  currentIdx=0;results=[];sessionQuestions=shuffle(sessionQuestions);
+  showScreen('quizScreen');renderQ();
+});
+document.getElementById('backBtn').addEventListener('click',()=>{
+  showScreen('homeScreen');
+  renderResumeBanner();
+  initHome();
+});
 
 // STATS
 document.querySelectorAll('.chart-range-btn').forEach(btn=>{btn.addEventListener('click',()=>{document.querySelectorAll('.chart-range-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');scoreChartRange=parseInt(btn.dataset.range);if(window._cs)drawChart(scoreChartRange,window._cs);});});
@@ -1218,7 +1376,7 @@ function switchTab(tab){document.querySelectorAll('.admin-tab').forEach(b=>b.cla
 // INIT
 (function(){
   const nick=localStorage.getItem(LS_NICK),uid=localStorage.getItem(LS_UID);
-  if(nick&&uid){currentNickname=nick;currentUserId=uid;loadSets();rebuildAllQuestions();updateChips();initHome();showScreen('homeScreen');}
+  if(nick&&uid){currentNickname=nick;currentUserId=uid;loadSets();rebuildAllQuestions();updateChips();initHome();renderResumeBanner();showScreen('homeScreen');}
   else{showScreen('nickScreen');}
 })();
 </script>
