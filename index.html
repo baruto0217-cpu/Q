@@ -880,7 +880,33 @@ async function fetchAllScores(){
   try{return await sb('scores?select=nickname,pct,correct,total,created_at&order=created_at.desc')||[];}catch{return[];}
 }
 
-// --- 旧localStorage重み → question_resultsベースに切り替え ---
+// --- question_resultsからlocalStorageの重みを再構築 ---
+async function syncWeightsFromDB(){
+  if(!currentUserId)return;
+  try{
+    // 自分の全回答履歴を取得（question_idとcorrectのみ）
+    const res=await sb(`question_results?user_id=eq.${currentUserId}&select=question_id,correct&order=answered_at.asc`)||[];
+    if(!res.length)return;
+
+    // question_idをキーに正解数・不正解数を集計
+    const map={};
+    res.forEach(r=>{
+      const k=r.question_id;
+      if(!map[k])map[k]={correct:0,wrong:0};
+      r.correct?map[k].correct++:map[k].wrong++;
+    });
+
+    // allQuestionsのidと照合してqKey形式でlocalStorageに書き込む
+    const w=getW();
+    allQuestions.forEach(q=>{
+      if(q.id&&map[q.id]){
+        w[qKey(q)]=map[q.id];
+      }
+    });
+    saveW(w);
+    renderWStats();
+  }catch(e){console.warn('syncWeightsFromDB error',e);}
+}
 function getW(){try{return JSON.parse(localStorage.getItem(WEIGHTS_KEY)||'{}');}catch{return{};}}
 function saveW(w){try{localStorage.setItem(WEIGHTS_KEY,JSON.stringify(w));}catch{}}
 function qKey(q){return q.id||q.text.slice(0,50);}
@@ -938,6 +964,7 @@ async function submitNickname(){
   showToast('📥 問題データを同期中...');
   await fetchSetsFromDB();
   rebuildAllQuestions();
+  await syncWeightsFromDB(); // ← 苦手データをDBから復元
   initHome();showScreen('homeScreen');
 }
 function updateChips(){const t='👤 '+(currentNickname||'—');document.getElementById('userChip').textContent=t;document.getElementById('userChipStats').textContent=t;}
@@ -1836,7 +1863,12 @@ function resetMotivation(){
     updateChips();initHome();renderResumeBanner();showScreen('homeScreen');
     // バックグラウンドでSupabaseと同期
     const ok=await fetchSetsFromDB();
-    if(ok){rebuildAllQuestions();initHome();renderSetCards&&document.getElementById('selectScreen').classList.contains('active')&&renderSetCards();}
+    if(ok){
+      rebuildAllQuestions();
+      await syncWeightsFromDB(); // 苦手データも同期
+      initHome();
+      if(document.getElementById('selectScreen').classList.contains('active'))renderSetCards();
+    }
   }else{showScreen('nickScreen');}
 })();
 </script>
