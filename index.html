@@ -744,8 +744,8 @@ body::before{content:'';position:fixed;inset:0;background-image:repeating-linear
 </div>
 
 <script>
-const SUPA_URL='https://qaaofeofhbtbslcgafqy.supabase.co';
-const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhYW9mZW9maGJ0YnNsY2dhZnF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNjE1NTYsImV4cCI6MjA5MTczNzU1Nn0.eS05RsBtj0vheZF61NyUgtK1nNcqueKhv1kjnuH-MTI';
+const SUPA_URL='https://vwpxxqunfrvjtegpybfn.supabase.co';
+const SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ3cHh4cXVuZnJ2anRlZ3B5YmZuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NDczOTMsImV4cCI6MjA5NDIyMzM5M30.a39Gy2TYvHYlYfl9pghYKHLvqatkbwoIW2Yp6eUSDrc';
 
 async function sb(path,opts={}){
   const r=await fetch(SUPA_URL+'/rest/v1/'+path,{...opts,headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':opts.prefer||'return=representation',...(opts.headers||{})}});
